@@ -276,6 +276,43 @@ async def view_chromadb_data(agency_id: int = 99):
         ]
     }
 
+@router.get("/check-redis")
+async def check_redis():
+    """
+    কাজ : Redis এ save হওয়া data দেখায়
+    """
+    import redis
+    import json
+
+    r = redis.from_url("redis://localhost:6379")
+
+    # সব campaign keys
+    keys = r.keys("campaign:*")
+    result = {}
+
+    for key in keys:
+        key_str = key.decode("utf-8")
+        key_type = r.type(key).decode("utf-8")
+
+        if key_type == "list":
+            items = r.lrange(key, 0, -1)
+            result[key_str] = {
+                "type": "queue",
+                "total": len(items),
+                "items": [json.loads(i) for i in items[:3]]
+            }
+        elif key_type == "string":
+            data = r.get(key)
+            result[key_str] = {
+                "type": "status",
+                "data": json.loads(data)
+            }
+
+    return {
+        "total_keys": len(keys),
+        "redis_data": result
+    }
+
 @router.get("/test")
 async def auth_test():
     return {"router": "auth", "status": "ready"}

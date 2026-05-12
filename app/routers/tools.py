@@ -1,75 +1,81 @@
 """
-File Name : tools.py
-Purpose   : Handle all Vapi requests during calls
-
-             1. Book meetings (bookAppointment)
-             2. Qualify leads (qualifyLead)
-             3. Get transfer number (getTransferNumber)
-
-Called By : Vapi (automatically during calls)
-Connected : ghl_service.py, db_service.py
+ফাইলের নাম  : tools.py
+ফাইলের কাজ  : Call চলাকালীন Vapi এর সব request handle করে
+কে call করে : Vapi (call এর ভেতর থেকে automatically)
+সংযুক্ত     : ghl_service.py, db_service.py
 """
 
 from fastapi import APIRouter, Request
+from app.services import db_service, ghl_service
 
 router = APIRouter()
 
 
 # ============================================
 # BOOK APPOINTMENT
-# Purpose : Book customer meetings
-# URL     : POST /tools/book-appointment
-# Called By : Vapi (when customer asks for meeting)
+# কাজ : Customer meeting book করতে চাইলে
+# URL : POST /tools/book-appointment
+# কে call করে : Vapi (customer "meeting চাই" বললে)
 # ============================================
 @router.post("/book-appointment")
 async def book_appointment(request: Request):
     """
-    Purpose : Book customer appointment
-    Inputs  : customer_name, datetime, lead_id, timezone
-    Returns : meeting link to Vapi
-    Action  : Save booking in GHL Calendar + Database
+    কাজ  : Customer meeting book করে
+    নেয়  : customer_name, datetime, lead_id, timezone
+    দেয়  : result message Vapi কে (Vapi এর format এ)
+    করে  : DB তে meeting save + GHL sync
     """
     try:
         data = await request.json()
     except:
         data = {}
 
-    customer_name = data.get("customer_name", "")
+    customer_name = data.get("customer_name", "Customer")
     datetime_str  = data.get("datetime", "")
     lead_id       = data.get("lead_id", "")
     timezone      = data.get("timezone", "Asia/Dhaka")
 
-    print(f"📅 Booking: {customer_name} | Time: {datetime_str} | Lead: {lead_id}")
+    print(f"📅 Booking | Name: {customer_name} | Time: {datetime_str} | Lead: {lead_id}")
 
-    # TODO: Add GHL Calendar API integration
-    # TODO: Save meeting into database
+    # Meeting link (placeholder, পরে GHL Calendar দিয়ে real link আসবে)
+    meeting_link = "https://calendly.com/insureflow/meeting"
 
+    # DB তে meeting save করো
+    await db_service.save_meeting({
+        "lead_id"     : lead_id,
+        "agency_id"   : 1,
+        "meeting_link": meeting_link,
+        "scheduled_at": datetime_str,
+        "customer_name": customer_name
+    })
+
+    # Lead status update করো
+    if lead_id:
+        await db_service.update_lead(lead_id, {
+            "status": "booked"
+        })
+
+    print(f"✅ Booking confirmed | {customer_name} | {datetime_str}")
+
+    # Vapi এর জন্য সঠিক format
     return {
-        "status": "success",
-        "message": f"Appointment booked for {customer_name}",
-        "meeting_link": "https://calendly.com/placeholder"
+        "result": f"Appointment successfully booked for {customer_name} on {datetime_str}. Meeting link: {meeting_link}"
     }
 
 
 # ============================================
 # QUALIFY LEAD
-# Purpose : Update lead status based on call intent
-# URL     : POST /tools/qualify-lead
-# Called By : Vapi (when intent is detected)
+# কাজ : Lead এর intent বোঝার পর status update করে
+# URL : POST /tools/qualify-lead
+# কে call করে : Vapi (intent detect হলে)
 # ============================================
 @router.post("/qualify-lead")
 async def qualify_lead(request: Request):
     """
-    Purpose : Update lead status based on intent
-    Inputs  : lead_id, intent, agency_id
-    Returns : success response
-    Action  : Update DB + GHL CRM
-
-    Possible Intents:
-    → interested
-    → not_interested
-    → busy
-    → talk_to_agent
+    কাজ  : Lead এর intent অনুযায়ী status update করে
+    নেয়  : lead_id, intent, agency_id
+    দেয়  : result message Vapi কে
+    করে  : DB + GHL CRM update
     """
     try:
         data = await request.json()
@@ -78,76 +84,72 @@ async def qualify_lead(request: Request):
 
     lead_id   = data.get("lead_id", "")
     intent    = data.get("intent", "")
-    agency_id = data.get("agency_id", "")
+    agency_id = data.get("agency_id", 1)
 
-    print(f"🎯 Lead Qualified | Lead: {lead_id} | Intent: {intent} | Agency: {agency_id}")
+    print(f"🎯 Qualify Lead | Lead: {lead_id} | Intent: {intent}")
 
-    # TODO: Update lead status in database
-    # await db_service.update_lead_status(lead_id, intent)
+    # DB তে lead status update করো
+    if lead_id:
+        await db_service.update_lead(lead_id, {
+            "status": intent
+        })
 
-    # TODO: Update GHL CRM contact status
-    # await ghl_service.update_contact_status(lead_id, intent)
+    # GHL CRM update করো
+    ghl_contact_id = data.get("ghl_contact_id", "")
+    if ghl_contact_id:
+        await ghl_service.update_contact_status(
+            ghl_contact_id=ghl_contact_id,
+            intent=intent,
+            agency_id=agency_id
+        )
 
+    # Vapi এর জন্য সঠিক format
     return {
-        "status": "success",
-        "lead_id": lead_id,
-        "intent": intent,
-        "message": f"Lead {lead_id} updated to {intent}"
+        "result": f"Lead status updated to {intent}"
     }
 
 
 # ============================================
 # GET TRANSFER NUMBER
-# Purpose : Return correct agent number per agency
-# URL     : POST /tools/transfer-number
-# Called By : Vapi (before transferCall)
+# কাজ : Agency অনুযায়ী সঠিক agent number দেয়
+# URL : POST /tools/transfer-number
+# কে call করে : Vapi (transferCall এর আগে)
 # ============================================
 @router.post("/transfer-number")
 async def get_transfer_number(request: Request):
     """
-    Purpose : Return agency-specific transfer number
-    Inputs  : agency_id
-    Returns : transfer number
-    Action  : Fetch number from database
-
-    Why Needed:
-    → Each agency has different agent numbers
-    → Static number sends all calls to one place
-    → Dynamic routing sends calls correctly
+    কাজ  : Agency র আলাদা agent number দেয় Vapi কে
+    নেয়  : agency_id
+    দেয়  : transfer number
+    করে  : DB থেকে agency র number আনে
     """
     try:
         data = await request.json()
     except:
         data = {}
 
-    agency_id = data.get("agency_id", "")
+    agency_id = data.get("agency_id", 1)
 
-    print(f"📞 Transfer request | Agency: {agency_id}")
+    print(f"📞 Transfer number | Agency: {agency_id}")
 
-    # TODO: Fetch agency from database
-    # agency = await db_service.get_agency(agency_id)
-    # transfer_number = agency["transfer_number"]
+    # DB থেকে agency র transfer number আনো
+    agency = await db_service.get_agency(agency_id)
+    transfer_number = agency.get("transfer_number", "+8801322158015")
 
-    # Placeholder number for now
-    transfer_number = "+8801XXXXXXXXX"
+    print(f"✅ Transfer to: {transfer_number}")
 
+    # Vapi এর জন্য সঠিক format
     return {
-        "status": "success",
-        "transfer_number": transfer_number,
-        "agency_id": agency_id
+        "result": f"Transfer to {transfer_number}",
+        "transfer_number": transfer_number
     }
 
 
 # ============================================
 # TEST ENDPOINT
-# Purpose : Check if tools router is working
-# URL     : GET /tools/test
 # ============================================
 @router.get("/test")
 async def tools_test():
-    """
-    Purpose : Confirm tools router is running
-    """
     return {
         "router": "tools",
         "status": "ready",

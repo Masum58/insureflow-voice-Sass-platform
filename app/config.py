@@ -128,6 +128,9 @@ DB_API_KEY = os.getenv("DB_API_KEY")
 # OpenAI
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+# Ngrok URL (Development এ)
+NGROK_URL = os.getenv("NGROK_URL", "http://localhost:8000")
+
 
 if __name__ == "__main__":
     print("Config file run successfully!")
