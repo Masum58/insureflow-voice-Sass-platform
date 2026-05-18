@@ -57,6 +57,12 @@ VAPI_WEBHOOK_SECRET = os.getenv("VAPI_WEBHOOK_SECRET")
 # Main Vapi API URL
 VAPI_BASE_URL = "https://api.vapi.ai"
 
+VAPI_PHONE_NUMBER_ID = os.getenv("VAPI_PHONE_NUMBER_ID")
+
+# Vapi Provider Credential IDs (For Deepgram & ElevenLabs)
+VAPI_DEEPGRAM_CREDENTIAL_ID = os.getenv("VAPI_DEEPGRAM_CREDENTIAL_ID")
+VAPI_ELEVENLABS_CREDENTIAL_ID = os.getenv("VAPI_ELEVENLABS_CREDENTIAL_ID")
+
 
 
 # ============================================
@@ -130,6 +136,24 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Ngrok URL (Development এ)
 NGROK_URL = os.getenv("NGROK_URL", "http://localhost:8000")
+
+#vector database pinecone
+
+PINECONE_API_KEY=os.getenv("PINECONE_API_KEY")
+PINECONE_INDEX=os.getenv("PINECONE_INDEX")
+
+
+# ============================================
+# CALENDLY SETTINGS
+# Purpose:
+# Used to book appointments on Calendly
+#
+# Used in:
+# calendly_service.py
+# ============================================
+CALENDLY_API_KEY = os.getenv("CALENDLY_API_KEY")
+CALENDLY_EVENT_TYPE_URI = os.getenv("CALENDLY_EVENT_TYPE_URI")
+CALENDLY_BASE_URL = "https://api.calendly.com"
 
 
 if __name__ == "__main__":

@@ -1,451 +1,358 @@
 """
 ফাইলের নাম  : rag_service.py
-ফাইলের কাজ  : RAG (Retrieval Augmented Generation) এর সব কাজ করে
+ফাইলের কাজ  : RAG Pipeline সব কাজ করে
                
-               INGESTION PIPELINE:
-               File text → Chunks → Embeddings → ChromaDB
+               INGESTION:
+               File text → Chunks → Embeddings → Pinecone
                
-               RETRIEVAL PIPELINE:
-               User Query → Embed → Search ChromaDB → Context Return
+               RETRIEVAL:
+               Query → Embed → Pinecone Search → Context
                
-কে use করে  : knowledge_base.py (file upload এ)
-               webhooks.py (inbound call এ query করতে)
-সংযুক্ত     : config.py (OpenAI Key এর জন্য)
-               file_parser.py (text extract এর জন্য)
+কে use করে  : knowledge_base.py, webhooks.py
+সংযুক্ত     : config.py (OpenAI + Pinecone Keys)
+               file_parser.py (text extract)
 
 Chunking    : 500 tokens, 50 overlap
 Embedding   : OpenAI text-embedding-3-small
-Vector DB   : ChromaDB (Local)
-Multi-tenant: প্রতি Agency র আলাদা Collection
+Vector DB   : Pinecone (Cloud)
+Multi-tenant: প্রতি Agency র আলাদা Namespace
 """
 
-import chromadb
 import openai
 import tiktoken
+from pinecone import Pinecone, ServerlessSpec
 from app import config
 
-# OpenAI Client Setup
+
+# ============================================
+# CLIENT SETUP
+# ============================================
 openai_client = openai.OpenAI(api_key=config.OPENAI_API_KEY)
+tokenizer     = tiktoken.get_encoding("cl100k_base")
 
-# ChromaDB Client Setup
-# কাজ: Local এ ChromaDB চালু করে
-# সব data এই folder এ save হবে
-chroma_client = chromadb.PersistentClient(path="./chroma_db")
+# Pinecone Setup
+pc = Pinecone(api_key=config.PINECONE_API_KEY)
 
-# Tokenizer Setup
-# কাজ: Text কে tokens এ convert করে
-# chunk size measure করতে দরকার
-tokenizer = tiktoken.get_encoding("cl100k_base")
+
+# ============================================
+# PINECONE INDEX SETUP
+# কাজ : Index না থাকলে বানায়, থাকলে নিয়ে আসে
+# কখন: Server start হলে একবার চলে
+# ============================================
+def get_pinecone_index():
+    """
+    কাজ  : Pinecone Index নিয়ে আসে
+            না থাকলে নতুন বানায়
+    দেয়  : Pinecone Index object
+    """
+    index_name = config.PINECONE_INDEX
+
+    # Index আছে কিনা check করো
+    existing_indexes = [idx.name for idx in pc.list_indexes()]
+
+    if index_name not in existing_indexes:
+        print(f"📦 Pinecone: Creating index '{index_name}'...")
+
+        pc.create_index(
+            name     = index_name,
+            dimension= 1536,        # OpenAI text-embedding-3-small
+            metric   = "cosine",
+            spec     = ServerlessSpec(
+                cloud = "aws",
+                region= "us-east-1"
+            )
+        )
+        print(f"✅ Pinecone: Index created | Name: {index_name}")
+    else:
+        print(f"✅ Pinecone: Index found | Name: {index_name}")
+
+    return pc.Index(index_name)
+
+
+# Index নিয়ে আসো
+pinecone_index = get_pinecone_index()
+
+
+# ============================================
+# NAMESPACE HELPER
+# কাজ : Agency র namespace বানায়
+# Multi-tenant: প্রতি Agency আলাদা namespace
+# ============================================
+def get_namespace(agency_id: int) -> str:
+    """
+    কাজ  : Agency র Pinecone namespace return করে
+    নেয়  : agency_id
+    দেয়  : namespace string
+
+    উদাহরণ:
+    Agency 1 → "agency_1"
+    Agency 2 → "agency_2"
+    """
+    return f"agency_{agency_id}"
 
 
 # ============================================
 # CHUNKING FUNCTION
-# কাজ : বড় text কে ছোট ছোট chunks এ ভাগ করে
-# কেন : LLM একসাথে পুরো document নিতে পারে না
-#        500 tokens এর chunk নিতে পারে
+# কাজ : বড় text কে ছোট chunks এ ভাগ করে
 # ============================================
 def create_chunks(text: str, chunk_size: int = 500, overlap: int = 50):
     """
-    কাজ  : বড় text কে 500 token এর chunks এ ভাগ করে
-    নেয়  : text (যেকোনো বড় text)
-    দেয়  : chunks list (প্রতিটা chunk 500 token এর)
-    
-    উদাহরণ:
-    Input : "আমি insurance নিতে চাই... [5000 words]"
-    Output: [chunk1(500 tokens), chunk2(500 tokens), ...]
-    
-    Overlap কেন:
-    chunk1 এর শেষ 50 token = chunk2 এর শুরু 50 token
-    → Context হারায় না
+    কাজ  : Text কে 500 token এর chunks এ ভাগ করে
+    নেয়  : text
+    দেয়  : chunks list
     """
-
-    # Text কে tokens এ convert করো
     tokens = tokenizer.encode(text)
-    
     chunks = []
-    start = 0
-    
+    start  = 0
+
     while start < len(tokens):
-        # 500 token এর একটা chunk নাও
-        end = start + chunk_size
+        end          = start + chunk_size
         chunk_tokens = tokens[start:end]
-        
-        # Tokens কে আবার text এ convert করো
-        chunk_text = tokenizer.decode(chunk_tokens)
+        chunk_text   = tokenizer.decode(chunk_tokens)
         chunks.append(chunk_text)
-        
-        # পরের chunk এর শুরু
-        # Overlap এর জন্য 50 token পিছিয়ে শুরু করো
         start = end - overlap
-    
-    print(f"✂️ RAG: Text chunked | Total chunks: {len(chunks)}")
+
+    print(f"✂️ RAG: Chunked | Total: {len(chunks)}")
     return chunks
 
 
-
 # ============================================
-# EMBEDDING FUNCTION
-# কাজ : Text কে Vector (numbers) এ convert করে
-# কেন : ChromaDB text বোঝে না, শুধু numbers বোঝে
-#        Semantic search এর জন্য vector লাগে
+# EMBEDDING FUNCTIONS
 # ============================================
 async def create_embedding(text: str):
     """
     কাজ  : একটা text কে vector এ convert করে
-    নেয়  : text (chunk বা user query)
-    দেয়  : vector (1536 numbers এর list)
-    
-    উদাহরণ:
-    Input : "health insurance premium কত?"
-    Output: [0.123, -0.456, 0.789, ...] (1536 numbers)
-    
-    কেন OpenAI text-embedding-3-small:
-    → Cheap (প্রতি 1M token = $0.02)
-    → Fast
-    → Bengali + English দুইটাই বোঝে
+    নেয়  : text
+    দেয়  : vector (1536 numbers)
     """
-
     try:
         response = openai_client.embeddings.create(
             model="text-embedding-3-small",
             input=text
         )
-        vector = response.data[0].embedding
-        print(f"🔢 RAG: Embedding created | Dimensions: {len(vector)}")
-        return vector
-
+        return response.data[0].embedding
     except Exception as e:
-        print(f"❌ RAG: Embedding failed | Error: {str(e)}")
+        print(f"❌ RAG: Embedding failed | {str(e)}")
         return None
 
 
-# ============================================
-# BATCH EMBEDDING FUNCTION  
-# কাজ : অনেকগুলো chunks একসাথে embed করে
-# কেন : প্রতিটা chunk আলাদা আলাদা embed করলে
-#        অনেক API call লাগে, slow হয়
-#        Batch এ করলে fast + cheap
-# ============================================
 async def create_batch_embeddings(chunks: list):
     """
     কাজ  : সব chunks একসাথে embed করে
     নেয়  : chunks list
-    দেয়  : vectors list (প্রতিটা chunk এর জন্য একটা vector)
-    
-    উদাহরণ:
-    Input : [chunk1, chunk2, chunk3, ...]
-    Output: [vector1, vector2, vector3, ...]
+    দেয়  : vectors list
     """
-
     try:
         response = openai_client.embeddings.create(
             model="text-embedding-3-small",
             input=chunks
         )
         vectors = [item.embedding for item in response.data]
-        print(f"🔢 RAG: Batch embeddings created | Total: {len(vectors)}")
+        print(f"🔢 RAG: Batch embeddings | Total: {len(vectors)}")
         return vectors
-
     except Exception as e:
-        print(f"❌ RAG: Batch embedding failed | Error: {str(e)}")
+        print(f"❌ RAG: Batch embedding failed | {str(e)}")
         return None
-    
 
 
 # ============================================
-# CHROMADB COLLECTION GET/CREATE
-# কাজ : প্রতি Agency র আলাদা Collection বানায়
-# কেন : Multi-tenant এ data isolation দরকার
-#        Agency A র data Agency B দেখতে পাবে না
+# SAVE TO PINECONE (INGESTION)
+# কাজ : Chunks + Vectors Pinecone তে save করে
 # ============================================
-def get_agency_collection(agency_id: int):
-    """
-    কাজ  : Agency র ChromaDB collection নিয়ে আসে
-            না থাকলে নতুন বানায়
-    নেয়  : agency_id
-    দেয়  : ChromaDB collection object
-    
-    উদাহরণ:
-    Agency 1 → collection name: "agency_1_knowledge"
-    Agency 2 → collection name: "agency_2_knowledge"
-    """
-
-    collection_name = f"agency_{agency_id}_knowledge"
-
-    collection = chroma_client.get_or_create_collection(
-        name=collection_name,
-        metadata={"agency_id": str(agency_id)}
-    )
-
-    print(f"📚 RAG: Collection ready | Name: {collection_name}")
-    return collection
-
-
-# ============================================
-# SAVE TO CHROMADB (INGESTION)
-# কাজ : Chunks + Vectors ChromaDB তে save করে
-# কেন : পরে search করার জন্য store করতে হয়
-# ============================================
-async def save_to_chromadb(
+async def save_to_pinecone(
     agency_id: int,
-    chunks: list,
-    vectors: list,
+    chunks   : list,
+    vectors  : list,
     file_name: str
 ):
     """
-    কাজ  : Chunks এবং তাদের Vectors ChromaDB তে save করে
+    কাজ  : Chunks + Vectors Pinecone তে save করে
     নেয়  : agency_id, chunks, vectors, file_name
-    দেয়  : True (success) / False (failure)
-    কখন : File upload হলে ingestion pipeline এ
-
-    ChromaDB তে যা save হয়:
-    → documents : actual chunk text
-    → embeddings: chunk এর vector
-    → metadatas : chunk এর extra info
-    → ids       : প্রতিটা chunk এর unique id
+    দেয়  : True/False
     """
-
     try:
-        collection = get_agency_collection(agency_id)
+        namespace = get_namespace(agency_id)
 
-        # প্রতিটা chunk এর জন্য unique ID বানাও
-        ids = [
-            f"agency_{agency_id}_{file_name}_chunk_{i}"
-            for i in range(len(chunks))
-        ]
+        # Pinecone format এ vectors বানাও
+        vectors_to_upsert = []
+        for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
+            vectors_to_upsert.append({
+                "id"    : f"agency_{agency_id}_{file_name}_chunk_{i}",
+                "values": vector,
+                "metadata": {
+                    "agency_id" : str(agency_id),
+                    "file_name" : file_name,
+                    "chunk_index": str(i),
+                    "text"      : chunk[:1000]  # Metadata এ text রাখো
+                }
+            })
 
-        # Metadata বানাও
-        # কোন file থেকে এসেছে সেটা রাখবো
-        metadatas = [
-            {
-                "agency_id": str(agency_id),
-                "file_name": file_name,
-                "chunk_index": str(i)
-            }
-            for i in range(len(chunks))
-        ]
+        # Pinecone তে upsert করো (batch এ)
+        batch_size = 100
+        for i in range(0, len(vectors_to_upsert), batch_size):
+            batch = vectors_to_upsert[i:i + batch_size]
+            pinecone_index.upsert(
+                vectors  = batch,
+                namespace= namespace
+            )
 
-        # ChromaDB তে save করো
-        collection.add(
-            documents=chunks,
-            embeddings=vectors,
-            metadatas=metadatas,
-            ids=ids
-        )
-
-        print(f"💾 RAG: Saved to ChromaDB | Agency: {agency_id} | Chunks: {len(chunks)}")
+        print(f"💾 RAG: Saved to Pinecone | Agency: {agency_id} | Chunks: {len(chunks)}")
         return True
 
     except Exception as e:
-        print(f"❌ RAG: Save failed | Error: {str(e)}")
+        print(f"❌ RAG: Pinecone save failed | {str(e)}")
         return False
 
 
 # ============================================
-# DELETE FILE FROM CHROMADB
-# কাজ : Agency কোনো file delete করলে
-#        সেই file এর সব chunks মুছে দেয়
+# DELETE FILE FROM PINECONE
+# কাজ : File delete হলে Pinecone থেকেও মুছে দেয়
 # ============================================
 async def delete_file_from_chromadb(agency_id: int, file_name: str):
     """
-    কাজ  : একটা file এর সব chunks ChromaDB থেকে delete করে
+    কাজ  : File এর সব chunks Pinecone থেকে delete করে
     নেয়  : agency_id, file_name
-    দেয়  : True (success) / False (failure)
-    কখন : Agency file delete করলে
+    দেয়  : True/False
     """
-
     try:
-        collection = get_agency_collection(agency_id)
+        namespace = get_namespace(agency_id)
 
-        # এই file এর সব chunks খুঁজে delete করো
-        collection.delete(
-            where={"file_name": file_name}
+        # এই file এর সব vector ID বের করো
+        prefix = f"agency_{agency_id}_{file_name}_chunk_"
+
+        # Pinecone তে delete করো
+        pinecone_index.delete(
+            namespace= namespace,
+            filter   = {"file_name": {"$eq": file_name}}
         )
 
-        print(f"🗑️ RAG: File deleted | Agency: {agency_id} | File: {file_name}")
+        print(f"🗑️ RAG: Deleted | Agency: {agency_id} | File: {file_name}")
         return True
 
     except Exception as e:
-        print(f"❌ RAG: Delete failed | Error: {str(e)}")
+        print(f"❌ RAG: Delete failed | {str(e)}")
         return False
-    
-
 
 
 # ============================================
 # MAIN INGESTION PIPELINE
-# কাজ : File এর text নিয়ে পুরো ingestion করে
-#        Chunk → Embed → Save একসাথে
-# কেন : file_parser.py text দেবে
-#        এই function বাকি সব করবে
-# কে call করে : knowledge_base.py (file upload এ)
+# কাজ : পুরো ingestion একসাথে করে
 # ============================================
-async def ingest_document(
-    agency_id: int,
-    text: str,
-    file_name: str
-):
+async def ingest_document(agency_id: int, text: str, file_name: str):
     """
-    কাজ  : Document এর text নিয়ে পুরো ingestion pipeline চালায়
-    নেয়  : agency_id, text (file থেকে extracted), file_name
-    দেয়  : True (success) / False (failure)
-    কখন : Agency file upload করলে
-
-    Pipeline:
-    text → chunks → embeddings → ChromaDB save
+    কাজ  : Document text নিয়ে পুরো pipeline চালায়
+    নেয়  : agency_id, text, file_name
+    দেয়  : True/False
+    Pipeline: text → chunks → embeddings → Pinecone
     """
 
-    print(f"\n🚀 RAG: Ingestion started | Agency: {agency_id} | File: {file_name}")
-    print(f"   Text length: {len(text)} characters")
+    print(f"\n🚀 RAG: Ingestion | Agency: {agency_id} | File: {file_name}")
 
-    # Step 1 — Text কে Chunks এ ভাগ করো
-    print(f"\n📌 Step 1: Chunking...")
+    # Step 1 — Chunking
     chunks = create_chunks(text)
     if not chunks:
-        print(f"❌ RAG: No chunks created")
         return False
-    print(f"   ✅ {len(chunks)} chunks created")
+    print(f"   ✅ {len(chunks)} chunks")
 
-    # Step 2 — সব Chunks Embed করো
-    print(f"\n📌 Step 2: Creating embeddings...")
+    # Step 2 — Embedding
     vectors = await create_batch_embeddings(chunks)
     if not vectors:
-        print(f"❌ RAG: Embeddings failed")
         return False
-    print(f"   ✅ {len(vectors)} embeddings created")
+    print(f"   ✅ {len(vectors)} embeddings")
 
-    # Step 3 — ChromaDB তে Save করো
-    print(f"\n📌 Step 3: Saving to ChromaDB...")
-    saved = await save_to_chromadb(
-        agency_id=agency_id,
-        chunks=chunks,
-        vectors=vectors,
-        file_name=file_name
-    )
+    # Step 3 — Pinecone Save
+    saved = await save_to_pinecone(agency_id, chunks, vectors, file_name)
     if not saved:
-        print(f"❌ RAG: Save failed")
         return False
-    print(f"   ✅ Saved to ChromaDB")
+    print(f"   ✅ Saved to Pinecone")
 
-    print(f"\n✅ RAG: Ingestion complete | Agency: {agency_id} | File: {file_name}")
-    print(f"   Chunks: {len(chunks)} | Embeddings: {len(vectors)}\n")
+    print(f"✅ RAG: Complete | {len(chunks)} chunks\n")
     return True
 
 
 # ============================================
 # GET COLLECTION STATS
-# কাজ : Agency র knowledge base এর info দেয়
-# কেন : Dashboard এ দেখাবো কতটা data আছে
+# কাজ : Agency র knowledge base stats দেয়
 # ============================================
 def get_collection_stats(agency_id: int):
     """
-    কাজ  : Agency র ChromaDB collection এর stats দেয়
+    কাজ  : Pinecone namespace এর stats দেয়
     নেয়  : agency_id
-    দেয়  : stats (total chunks, files list)
-    কখন : Dashboard এ knowledge base info দেখাতে
+    দেয়  : stats dict
     """
-
     try:
-        collection = get_agency_collection(agency_id)
-        total_chunks = collection.count()
+        namespace = get_namespace(agency_id)
+        stats     = pinecone_index.describe_index_stats()
+        ns_stats  = stats.namespaces.get(namespace, {})
+        total     = ns_stats.get("vector_count", 0)
 
-        # কোন কোন file আছে সেটা বের করো
-        if total_chunks > 0:
-            results = collection.get(include=["metadatas"])
-            files = list(set([
-                m.get("file_name", "unknown")
-                for m in results.get("metadatas", [])
-            ]))
-        else:
-            files = []
-
-        stats = {
-            "agency_id": agency_id,
-            "total_chunks": total_chunks,
-            "total_files": len(files),
-            "files": files
+        print(f"📊 RAG: Stats | Agency: {agency_id} | Vectors: {total}")
+        return {
+            "agency_id"   : agency_id,
+            "total_chunks": total,
+            "namespace"   : namespace
         }
-
-        print(f"📊 RAG: Stats | Agency: {agency_id} | Chunks: {total_chunks} | Files: {len(files)}")
-        return stats
 
     except Exception as e:
-        print(f"❌ RAG: Stats failed | Error: {str(e)}")
-        return {
-            "agency_id": agency_id,
-            "total_chunks": 0,
-            "total_files": 0,
-            "files": []
-        }
-    
+        print(f"❌ RAG: Stats failed | {str(e)}")
+        return {"agency_id": agency_id, "total_chunks": 0}
+
 
 # ============================================
-# SEARCH CHROMADB (RETRIEVAL)
-# কাজ : Customer এর প্রশ্নের সাথে মিলিয়ে
-#        ChromaDB থেকে relevant chunks খুঁজে আনে
+# SEARCH PINECONE (RETRIEVAL)
+# কাজ : Query দিয়ে Pinecone তে search করে
 # ============================================
 async def search_knowledge_base(
     agency_id: int,
-    query: str,
-    top_k: int = 3
+    query    : str,
+    top_k    : int = 3
 ):
     """
-    কাজ  : Customer এর query দিয়ে ChromaDB তে search করে
+    কাজ  : Query দিয়ে Pinecone তে semantic search করে
     নেয়  : agency_id, query, top_k
     দেয়  : relevant chunks list
-    কখন : Inbound call এ customer প্রশ্ন করলে
     """
-
     try:
-        collection = get_agency_collection(agency_id)
-
-        if collection.count() == 0:
-            print(f"⚠️ RAG: No data | Agency: {agency_id}")
-            return []
-
-        # Query embed করো
+        namespace    = get_namespace(agency_id)
         query_vector = await create_embedding(query)
+
         if not query_vector:
             return []
 
-        # ChromaDB তে search করো
-        results = collection.query(
-            query_embeddings=[query_vector],
-            n_results=top_k,
-            include=["documents", "distances"]
+        # Pinecone তে search করো
+        results = pinecone_index.query(
+            vector   = query_vector,
+            top_k    = top_k,
+            namespace= namespace,
+            include_metadata=True
         )
 
-        chunks = results.get("documents", [[]])[0]
-        distances = results.get("distances", [[]])[0]
+        # Chunks বের করো
+        chunks = []
+        for match in results.matches:
+            text = match.metadata.get("text", "")
+            score= round(match.score, 2)
+            chunks.append(text)
+            print(f"   Match: score={score} | {text[:80]}...")
 
-        print(f"🔍 RAG: Search done | Query: '{query[:50]}' | Found: {len(chunks)}")
-
-        for i, (chunk, dist) in enumerate(zip(chunks, distances)):
-            print(f"   Chunk {i+1}: score={round(1-dist, 2)} | {chunk[:80]}...")
-
+        print(f"🔍 RAG: Search | Query: '{query[:50]}' | Found: {len(chunks)}")
         return chunks
 
     except Exception as e:
-        print(f"❌ RAG: Search failed | Error: {str(e)}")
+        print(f"❌ RAG: Search failed | {str(e)}")
         return []
-
 
 
 # ============================================
 # BUILD CONTEXT FOR LLM
-# কাজ : Search results কে LLM এর জন্য
-#        একটা clean context এ convert করে
-# কে call করে : webhooks.py (inbound call এ)
+# কাজ : Search results কে LLM এর জন্য format করে
 # ============================================
 async def build_context(agency_id: int, query: str):
     """
-    কাজ  : Search করে relevant chunks নিয়ে
-            LLM এর জন্য clean context বানায়
+    কাজ  : Relevant chunks নিয়ে LLM এর জন্য context বানায়
     নেয়  : agency_id, query
     দেয়  : formatted context string
-    কখন : Inbound call এ Vapi System Prompt এ inject করতে
     """
-
     chunks = await search_knowledge_base(agency_id, query)
 
     if not chunks:
@@ -455,5 +362,5 @@ async def build_context(agency_id: int, query: str):
     for i, chunk in enumerate(chunks, 1):
         context += f"[Info {i}]\n{chunk}\n\n"
 
-    print(f"📝 RAG: Context built | Agency: {agency_id} | Length: {len(context)} chars")
+    print(f"📝 RAG: Context built | Length: {len(context)} chars")
     return context

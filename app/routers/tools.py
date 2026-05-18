@@ -6,7 +6,7 @@
 """
 
 from fastapi import APIRouter, Request
-from app.services import db_service, ghl_service
+from app.services import db_service, ghl_service, calendly_service
 
 router = APIRouter()
 
@@ -23,7 +23,7 @@ async def book_appointment(request: Request):
     কাজ  : Customer meeting book করে
     নেয়  : customer_name, datetime, lead_id, timezone
     দেয়  : result message Vapi কে (Vapi এর format এ)
-    করে  : DB তে meeting save + GHL sync
+    করে  : DB তে meeting save + Calendly sync
     """
     try:
         data = await request.json()
@@ -31,16 +31,31 @@ async def book_appointment(request: Request):
         data = {}
 
     customer_name = data.get("customer_name", "Customer")
-    datetime_str  = data.get("datetime", "")
+    datetime_str  = data.get("datetime", "") # ISO format expected for Calendly
     lead_id       = data.get("lead_id", "")
     timezone      = data.get("timezone", "Asia/Dhaka")
 
     print(f"📅 Booking | Name: {customer_name} | Time: {datetime_str} | Lead: {lead_id}")
 
-    # Meeting link (placeholder, পরে GHL Calendar দিয়ে real link আসবে)
-    meeting_link = "https://calendly.com/insureflow/meeting"
+    # Lead এর email নিয়ে আসো DB থেকে
+    lead = await db_service.get_lead(lead_id)
+    email = lead.get("email", "test@example.com") if lead else "test@example.com"
 
-    # DB তে meeting save করো
+    # Step 1 — Calendly তে বুক করো
+    calendly_res = await calendly_service.create_invitee(
+        customer_name=customer_name,
+        email=email,
+        start_time=datetime_str,
+        timezone=timezone
+    )
+
+    # Meeting link (Calendly থেকে আসলে সেটি ইউজ করব, নাহলে প্লেসহোল্ডার)
+    meeting_link = "https://calendly.com/insureflow/meeting"
+    if calendly_res:
+        # Calendly response থেকে link নেওয়ার চেষ্টা
+        meeting_link = calendly_res.get("resource", {}).get("scheduling_url", meeting_link)
+
+    # Step 2 — DB তে meeting save করো
     await db_service.save_meeting({
         "lead_id"     : lead_id,
         "agency_id"   : 1,
@@ -49,7 +64,7 @@ async def book_appointment(request: Request):
         "customer_name": customer_name
     })
 
-    # Lead status update করো
+    # Step 3 — Lead status update করো
     if lead_id:
         await db_service.update_lead(lead_id, {
             "status": "booked"
@@ -59,7 +74,7 @@ async def book_appointment(request: Request):
 
     # Vapi এর জন্য সঠিক format
     return {
-        "result": f"Appointment successfully booked for {customer_name} on {datetime_str}. Meeting link: {meeting_link}"
+        "result": f"Appointment successfully booked for {customer_name} on {datetime_str}. A calendar invitation has been sent to {email}."
     }
 
 
@@ -146,16 +161,139 @@ async def get_transfer_number(request: Request):
 
 
 # ============================================
+# HANDLE TOOL CALLS (CENTRAL HANDLER)
+# কাজ : Vapi থেকে আসা সব tool request handle করে
+# কখন: AI কোনো tool use করতে চাইলে Vapi এই event পাঠায়
+# ============================================
+async def handle_tool_calls(message: dict):
+    """
+    কাজ  : Tool call এর type দেখে সঠিক logic run করে
+    নেয়  : message object (Vapi থেকে)
+    দেয়  : Tool call result
+    """
+    tool_calls = message.get("toolCalls", [])
+    if not tool_calls:
+        return {"results": []}
+
+    # Extract dynamic agency_id from payload
+    call = message.get("call") or {}
+    phone_obj = message.get("phoneNumber") or {}
+    called_number = phone_obj.get("number", "")
+    
+    agency_id = None
+    if called_number:
+        from app.services import db_service
+        try:
+            agency_id = await db_service.get_agency_id_by_phone(called_number)
+        except:
+            pass
+            
+    if not agency_id:
+        metadata = call.get("metadata") or {}
+        agency_id = metadata.get("agency_id", 1)
+
+    results = []
+
+    for tool_call in tool_calls:
+        tool_id = tool_call.get("id")
+        function = tool_call.get("function", {})
+        name = function.get("name")
+        args = function.get("arguments", {})
+
+        print(f"🛠️ Tool Call | Name: {name} | ID: {tool_id} | Agency: {agency_id}")
+
+        # --- CASE 1: Book Appointment (Calendly) ---
+        if name == "bookAppointment":
+            customer_name = args.get("customer_name", "Customer")
+            datetime_str  = args.get("datetime", "")
+            lead_id       = args.get("lead_id", "1")
+            
+            res = await book_appointment_internal(customer_name, datetime_str, lead_id)
+            results.append({"toolCallId": tool_id, "result": res})
+
+        # --- CASE 2: Search Knowledge Base (Dynamic RAG) ---
+        elif name == "searchKnowledgeBase":
+            query = args.get("query", "")
+            tool_agency_id = args.get("agency_id", agency_id)
+            
+            print(f"🔍 RAG Tool Search | Query: {query} | Agency: {tool_agency_id}")
+            from app.services import rag_service
+            res = await rag_service.build_context(agency_id=tool_agency_id, query=query)
+            
+            results.append({
+                "toolCallId": tool_id, 
+                "result": res if res else "No specific information found in the records."
+            })
+
+        # --- CASE 3: Transfer Call ---
+        elif name == "transferCall":
+            tool_agency_id = args.get("agency_id", agency_id)
+            agency = await db_service.get_agency(tool_agency_id)
+            transfer_number = agency.get("transfer_number", "+8801322158015")
+            
+            results.append({
+                "toolCallId": tool_id,
+                "result": f"Transferring to {transfer_number}",
+                "transfer_number": transfer_number
+            })
+
+        # --- DEFAULT CASE ---
+        else:
+            results.append({
+                "toolCallId": tool_id,
+                "result": f"Tool {name} not found or not implemented."
+            })
+
+    return {"results": results}
+
+
+
+# ============================================
+# INTERNAL HELPERS
+# ============================================
+
+async def book_appointment_internal(customer_name: str, datetime_str: str, lead_id: str):
+    """
+    কাজ  : সরাসরি Calendly এবং DB তে বুকিং দেয়
+    """
+    try:
+        # Lead এর email নাও
+        lead = await db_service.get_lead(lead_id)
+        email = lead.get("email", "customer@example.com") if lead else "customer@example.com"
+
+        # Calendly API কল
+        calendly_res = await calendly_service.create_invitee(
+            customer_name=customer_name,
+            email=email,
+            start_time=datetime_str
+        )
+
+        meeting_link = "https://calendly.com/insureflow/meeting"
+        if calendly_res:
+             meeting_link = calendly_res.get("resource", {}).get("scheduling_url", meeting_link)
+
+        # DB তে সেভ করো
+        await db_service.save_meeting({
+            "lead_id"     : lead_id,
+            "agency_id"   : 1,
+            "meeting_link": meeting_link,
+            "scheduled_at": datetime_str,
+            "customer_name": customer_name
+        })
+
+        return f"Successfully booked for {customer_name} on {datetime_str}."
+
+    except Exception as e:
+        print(f"❌ Booking Error: {str(e)}")
+        return "Failed to book appointment. Please try again later."
+
+
+# ============================================
 # TEST ENDPOINT
 # ============================================
 @router.get("/test")
 async def tools_test():
     return {
         "router": "tools",
-        "status": "ready",
-        "endpoints": [
-            "POST /tools/book-appointment",
-            "POST /tools/qualify-lead",
-            "POST /tools/transfer-number"
-        ]
+        "status": "ready"
     }

@@ -24,6 +24,7 @@ Connected with:
 
 from fastapi import APIRouter
 from app.services import db_service
+from app import config
 
 router = APIRouter()
 
@@ -194,40 +195,21 @@ async def test_rag_service():
         }
     }
 
-@router.get("/check-chromadb")
-async def check_chromadb():
+# পুরানো check-chromadb এর জায়গায়
+@router.get("/check-pinecone")
+async def check_pinecone():
     """
-    কাজ : ChromaDB তে কী data আছে দেখায়
+    কাজ : Pinecone এ কী data আছে দেখায়
     """
     from app.services import rag_service
-    import chromadb
 
-    chroma_client = chromadb.PersistentClient(path="./chroma_db")
-
-    # সব collections দেখো
-    collections = chroma_client.list_collections()
-    result = []
-
-    for col in collections:
-        collection = chroma_client.get_collection(col.name)
-        count = collection.count()
-
-        # প্রথম 3টা data দেখো
-        if count > 0:
-            data = collection.get(limit=3)
-            sample = data["documents"][:3]
-        else:
-            sample = []
-
-        result.append({
-            "collection_name": col.name,
-            "total_chunks": count,
-            "sample_data": sample
-        })
+    stats = rag_service.pinecone_index.describe_index_stats()
 
     return {
-        "total_collections": len(collections),
-        "collections": result
+        "index_name"      : config.PINECONE_INDEX,
+        "total_vectors"   : stats.total_vector_count,
+        "namespaces"      : dict(stats.namespaces),
+        "dimension"       : stats.dimension
     }
 
 

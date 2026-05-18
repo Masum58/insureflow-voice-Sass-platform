@@ -30,6 +30,149 @@ def get_vapi_headers():
 
 
 # ============================================
+# CREATE BOOK APPOINTMENT TOOL
+# কাজ : Vapi তে bookAppointment tool বানায়
+# ============================================
+async def create_book_appointment_tool(agency_id: int):
+    """
+    কাজ  : Agency র জন্য bookAppointment tool বানায়
+    দেয়  : tool_id
+    """
+    tool_config = {
+        "type": "function",
+        "function": {
+            "name": "bookAppointment",
+            "description": "Use when customer wants to book a meeting",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "customer_name": {"type": "string"},
+                    "datetime"     : {"type": "string"},
+                    "lead_id"      : {"type": "string"},
+                    "timezone"     : {"type": "string"}
+                },
+                "required": ["customer_name", "datetime"]
+            }
+        },
+        "server": {
+            "url": f"{config.NGROK_URL}/tools/book-appointment",
+            "headers": {
+                "x-vapi-secret": config.VAPI_WEBHOOK_SECRET
+            }
+        }
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{config.VAPI_BASE_URL}/tool",
+            json=tool_config,
+            headers=get_vapi_headers(),
+            timeout=30
+        )
+
+    if response.status_code == 201:
+        tool_id = response.json().get("id")
+        print(f"✅ bookAppointment tool created | ID: {tool_id}")
+        return tool_id
+    else:
+        print(f"❌ Tool creation failed | {response.text}")
+        return None
+
+
+# ============================================
+# CREATE TRANSFER CALL TOOL
+# কাজ : Vapi তে transferCall tool বানায়
+# ============================================
+async def create_transfer_call_tool(transfer_number: str):
+    """
+    কাজ  : Agency র জন্য transferCall tool বানায়
+    নেয়  : transfer_number (agent এর number)
+    দেয়  : tool_id
+    """
+    tool_config = {
+        "type": "transferCall",
+        "destinations": [
+            {
+                "type"   : "number",
+                "number" : transfer_number,
+                "message": "একজন এজেন্টের সাথে সংযুক্ত করছি"
+            }
+        ]
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{config.VAPI_BASE_URL}/tool",
+            json=tool_config,
+            headers=get_vapi_headers(),
+            timeout=30
+        )
+
+    if response.status_code == 201:
+        tool_id = response.json().get("id")
+        print(f"✅ transferCall tool created | ID: {tool_id}")
+        return tool_id
+    else:
+        print(f"❌ Transfer tool failed | {response.text}")
+        return None
+
+# ============================================
+# CREATE SEARCH KNOWLEDGE BASE TOOL
+# ============================================
+async def create_search_knowledge_base_tool(agency_id: int):
+    """
+    কাজ  : Agency র জন্য searchKnowledgeBase tool create করে
+    """
+    tool_config = {
+        "type": "function",
+        "messages": [
+            {
+                "type": "request-start",
+                "content": "Give me a moment.",
+            }
+        ],
+        "function": {
+            "name": "searchKnowledgeBase",
+            "description": "Searches the insurance knowledge base for exact policy details. Use this to find plan information, premiums, and policy documents.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query based on customer question."
+                    },
+                    "agency_id": {
+                        "type": "integer",
+                        "default": agency_id
+                    }
+                },
+                "required": ["query"]
+            }
+        },
+        "server": {
+            "url": f"{config.NGROK_URL}/webhooks/vapi",
+            "secret": config.VAPI_WEBHOOK_SECRET
+        }
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{config.VAPI_BASE_URL}/tool",
+            json=tool_config,
+            headers=get_vapi_headers(),
+            timeout=30
+        )
+
+    if response.status_code == 201:
+        tool_id = response.json().get("id")
+        print(f"✅ searchKnowledgeBase tool created | ID: {tool_id}")
+        return tool_id
+    else:
+        print(f"❌ Search Knowledge Base tool failed | {response.text}")
+        return None
+
+
+# ============================================
 # CREATE AGENCY ASSISTANT
 # কাজ : নতুন Agency sign up করলে তাদের জন্য
 #       Vapi তে automatically Assistant বানায়
@@ -47,9 +190,14 @@ async def create_agency_assistant(
     কাজ  : Agency র জন্য Vapi তে Assistant create করে
     নেয়  : agency_id, agency_name, business_type, 
             custom_prompt, transfer_number, welcome_message
-    দেয়  : assistant_id (Vapi থেকে)
-    করে  : Vapi API তে POST request করে Assistant বানায়
+    দেয়  : assistant_id, book_tool_id, transfer_tool_id
     """
+
+    # Step 1 — Tools বানাও
+    print(f"🔧 Creating tools for Agency {agency_id}...")
+    book_tool_id     = await create_book_appointment_tool(agency_id)
+    transfer_tool_id = await create_transfer_call_tool(transfer_number)
+    search_tool_id   = await create_search_knowledge_base_tool(agency_id)
 
     # Agency র জন্য System Prompt বানাও
     system_prompt = f"""
@@ -62,6 +210,7 @@ async def create_agency_assistant(
     - Be polite and professional always
     - Speak in Bengali if customer speaks Bengali
     - Speak in English if customer speaks English
+    - IMPORTANT: Use the searchKnowledgeBase tool to find plan details, policy info, or premiums.
     - If customer is interested in insurance → use bookAppointment tool
     - If customer wants to talk to a human agent → use transfer_call_tool
     - If customer is busy → politely end the call
@@ -83,70 +232,26 @@ async def create_agency_assistant(
                 }
             ],
             "temperature": 0.7,
-            "maxTokens": 500
+            "maxTokens": 500,
+            "toolIds": [
+                book_tool_id,
+                transfer_tool_id,
+                search_tool_id
+            ]
         },
         "voice": {
             "provider": "11labs",
-            "voiceId": "charlie"
+            "voiceId": "21m00Tcm4TlvDq8ikWAM",
+            #"credentialId": config.VAPI_ELEVENLABS_CREDENTIAL_ID
         },
         "transcriber": {
             "provider": "deepgram",
             "model": "nova-2",
-            "language": "en"
+            "language": "en",
+            #"credentialId": config.VAPI_DEEPGRAM_CREDENTIAL_ID
         },
         "firstMessage": welcome_message,
         "firstMessageMode": "assistant-speaks-first",
-        "tools": [
-            {
-                # Book Appointment Tool
-                # কাজ: Meeting book করার জন্য FastAPI call করে
-                "type": "function",
-                "function": {
-                    "name": "bookAppointment",
-                    "description": "Use this when customer wants to book a meeting or appointment",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "customer_name": {
-                                "type": "string",
-                                "description": "Name of the customer"
-                            },
-                            "datetime": {
-                                "type": "string",
-                                "description": "Preferred date and time"
-                            },
-                            "lead_id": {
-                                "type": "string",
-                                "description": "ID of the lead"
-                            },
-                            "timezone": {
-                                "type": "string",
-                                "description": "Customer timezone"
-                            }
-                        },
-                        "required": ["customer_name", "datetime"]
-                    }
-                },
-                "server": {
-                    "url": f"{config.NGROK_URL}/tools/book-appointment",
-                    "headers": {
-                        "x-vapi-secret": config.VAPI_WEBHOOK_SECRET
-                    }
-                }
-            },
-            {
-                # Transfer Call Tool
-                # কাজ: Customer কে human agent এ transfer করে
-                "type": "transferCall",
-                "destinations": [
-                    {
-                        "type": "number",
-                        "number": transfer_number,
-                        "message": "একজন এজেন্টের সাথে সংযুক্ত করছি, অপেক্ষা করুন।"
-                    }
-                ]
-            }
-        ],
         "serverUrl": f"{config.NGROK_URL}/webhooks/vapi",
         "serverUrlSecret": config.VAPI_WEBHOOK_SECRET
     }
@@ -164,10 +269,10 @@ async def create_agency_assistant(
         assistant_data = response.json()
         assistant_id = assistant_data.get("id")
         print(f"✅ Assistant created | Agency: {agency_id} | Assistant ID: {assistant_id}")
-        return assistant_id
+        return assistant_id, book_tool_id, transfer_tool_id
     else:
         print(f"❌ Assistant creation failed | Error: {response.text}")
-        return None
+        return None, None, None
 
 
 # ============================================
@@ -191,7 +296,7 @@ async def start_outbound_call(
 
     call_config = {
         "assistantId": assistant_id,
-        "phoneNumberId": twilio_number,
+        "phoneNumberId": config.VAPI_PHONE_NUMBER_ID,
         "customer": {
             "number": lead_phone
         },

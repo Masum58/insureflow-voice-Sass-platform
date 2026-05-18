@@ -132,7 +132,7 @@ async def run_campaign_worker(agency_id: int):
         await asyncio.sleep(2)
 
     print(f"🏁 Worker Finished | Agency: {agency_id}")
-    await redis.aclose()
+    await redis.close()
 
 
 # ============================================
@@ -168,7 +168,7 @@ async def decrement_active_calls(agency_id: int):
     current = await redis.get(f"campaign:{agency_id}:active_calls")
     if current and int(current) > 0:
         await redis.decr(f"campaign:{agency_id}:active_calls")
-    await redis.aclose()
+    await redis.close()
 
 
 # ============================================

@@ -146,9 +146,9 @@ async def get_files(agency_id: int):
 
     return {
         "agency_id": agency_id,
-        "total_files": stats["total_files"],
-        "total_chunks": stats["total_chunks"],
-        "files": stats["files"]
+        "total_files": stats.get("total_files", 0),
+        "total_chunks": stats.get("total_chunks", 0),
+        "files": stats.get("files", [])
     }
 
 

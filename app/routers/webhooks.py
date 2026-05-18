@@ -21,142 +21,194 @@ router = APIRouter()
 @router.post("/vapi")
 async def vapi_webhook(request: Request):
     """
-    কাজ  : Vapi এর সব call event receive করে
-    নেয়  : Vapi থেকে JSON payload
-    দেয়  : Success/Error response
-    করে  : Event type দেখে সঠিক handler এ পাঠায়
+    কাজ  : Vapi এর সব call event receive করে সঠিক handler এ পাঠায়
     """
-
     try:
         payload = await request.json()
+        # ডিবাগিং এর জন্য পুরো ডাটা প্রিন্ট করি
+        print(f"\n📥 Full Payload Received: {payload}")
     except:
-        payload = {}
+        return {"status": "error", "message": "Invalid JSON"}
 
     message    = payload.get("message", {})
+    # ... (বাকি কোড আগের মতোই থাকবে)
     event_type = message.get("type")
     call       = message.get("call", {})
     call_type  = call.get("type")
 
-    print(f"\n📞 Webhook | Event: {event_type} | Type: {call_type}")
+    # অপ্রয়োজনীয় ইভেন্টগুলো ইগনোর করি যাতে লগ পরিষ্কার থাকে
+    ignored_events = ["status-update", "speech-update", "conversation-update", "assistant.started"]
+    if event_type in ignored_events:
+        return {"status": "ignored"}
+
+    print(f"\n🔔 Webhook | Event: {event_type} | Type: {call_type} | Call ID: {call.get('id')}")
 
     # ============================================
-    # CALL STARTED
+    # ১. ASSISTANT REQUEST (Dynamic Config & RAG)
     # ============================================
-    if event_type == "call-start":
-        if call_type == "inboundPhoneCall":
+    if event_type == "assistant-request":
+        return await handle_assistant_request(message)
+
+    # ============================================
+    # ২. TOOL CALLS (Booking, Transfer, etc.)
+    # ============================================
+    elif event_type == "tool-calls":
+        from app.routers import tools
+        return await tools.handle_tool_calls(message)
+
+    # ============================================
+    # ৩. CALL STARTED
+    # ============================================
+    elif event_type == "call-start":
+        if call_type in ["inboundPhoneCall", "webCall"]:
             return await handle_inbound_started(call)
         elif call_type == "outboundPhoneCall":
             return await handle_outbound_started(call)
-        elif call_type =="webCall":
-            return await handle_inbound_started(call)
 
     # ============================================
-    # CALL ENDED
+    # ৪. CALL ENDED
     # ============================================
     elif event_type == "end-of-call-report":
-        if call_type == "inboundPhoneCall":
+        if call_type in ["inboundPhoneCall", "webCall"]:
             return await handle_inbound_ended(message)
         elif call_type == "outboundPhoneCall":
             return await handle_outbound_ended(message)
-        elif call_type == "webCall":
-            return await handle_inbound_ended(message)
 
     # ============================================
-    # UNKNOWN EVENT
+    # ৫. OTHER EVENTS
     # ============================================
     else:
-        print(f"⚠️ Unknown event: {event_type}")
-        return {"status": "ignored"}
+        print(f"ℹ️ Info: Handled event {event_type}")
+        return {"status": "success"}
     
 # ============================================
 # HANDLE ASSISTANT REQUEST
 # কাজ : Inbound call এ Dynamic System Prompt দেয়
-#        RAG থেকে context inject করে
 # কখন: Call শুরুর আগে Vapi এই event পাঠায়
 # ============================================
 async def handle_assistant_request(message: dict):
     """
     কাজ  : Call শুরুর আগে Dynamic Assistant config return করে
-    নেয়  : message object
-    দেয়  : assistant config (RAG context সহ)
-    করে  :
-    1. Phone number থেকে agency_id বের করে
-    2. ChromaDB থেকে context build করে
-    3. Dynamic system prompt তৈরি করে
-    4. Vapi কে assistant config দেয়
     """
+    message = message or {}
+    call    = message.get("call") or {}
+    
+    # ফোন নম্বরটি সরাসরি message অবজেক্টে থাকে (Full Payload থেকে দেখা গেছে)
+    phone_obj       = message.get("phoneNumber") or {}
+    called_number   = phone_obj.get("number", "")
+    call_id         = call.get("id")
+    
+    print(f"\n🔔 Assistant Request | Call: {call_id} | To: {called_number}")
 
-    call          = message.get("call", {})
-    call_id       = call.get("id")
-    called_number = call.get("phoneNumber", {}).get("number", "")
-    agency_id     = call.get("metadata", {}).get("agency_id", 1)
+    # ১. ফোন নম্বর দিয়ে এজেন্সি আইডি বের করো
+    agency_id = None
+    if called_number:
+        try:
+            agency_id = await db_service.get_agency_id_by_phone(called_number)
+        except:
+            agency_id = None
+    
+    # ২. Fallback (যদি নম্বর না পাওয়া যায়)
+    if not agency_id:
+        metadata  = call.get("metadata") or {}
+        agency_id = metadata.get("agency_id", 1)
 
-    print(f"\n🤖 Assistant Request | Call: {call_id} | Agency: {agency_id}")
+    print(f"🏢 Identified Agency: {agency_id}")
 
-    # Agency info নিয়ে আসো
-    agency = await db_service.get_agency(agency_id)
+    # ৩. এজেন্সি তথ্য এবং RAG কনটেক্সট নিয়ে আসো
+    try:
+        agency = await db_service.get_agency(agency_id)
+        rag_context = await rag_service.build_context(
+            agency_id = agency_id,
+            query     = "insurance plans and policy coverage"
+        )
+    except:
+        agency = {"name": "Insurance Agency", "business_type": "Insurance"}
+        rag_context = ""
 
-    # RAG Context বানাও
-    # Default query দিয়ে শুরু করি
-    # Call চলাকালীন আরো specific হবে
-    rag_context = await rag_service.build_context(
-        agency_id = agency_id,
-        query     = "insurance information premium coverage"
-    )
-
-    # Dynamic System Prompt বানাও
-    agency_name   = agency.get("name", "Insurance Agency")
-    business_type = agency.get("business_type", "insurance")
-    base_prompt   = agency.get("custom_prompt", "")
-
+    # ৪. ডাইনামিক সিস্টেম প্রম্পট
+    agency_name = agency.get("name", "Insurance Agency")
+    base_prompt = agency.get("custom_prompt", "You are a helpful insurance assistant.")
+    
     system_prompt = f"""
 You are an AI voice assistant for {agency_name}.
-Business Type: {business_type}
-
 {base_prompt}
 
 === KNOWLEDGE BASE ===
-{rag_context}
+{rag_context if rag_context else "Please assist based on general insurance knowledge."}
 === END KNOWLEDGE BASE ===
 
 Rules:
-- Always use the knowledge base above to answer questions
-- Be polite and professional
-- Speak in Bengali if customer speaks Bengali
-- Speak in English if customer speaks English
-- If customer wants to book appointment → use bookAppointment tool
-- If customer wants human agent → use transfer_call_tool
-- Never make up information not in the knowledge base
+- STRICTLY SPEAK IN ENGLISH ONLY. Do not use any other language like Bengali.
+- Use the searchKnowledgeBase tool to find details about plans/premiums.
+- If you can't find info, offer to transfer to a human agent.
+- Be concise and professional.
     """
 
-    print(f"✅ Assistant Request | Context: {len(rag_context)} chars | Agency: {agency_name}")
-
-    # Vapi কে Dynamic Assistant Config দাও
+    # Vapi কে রেসপন্স দাও
     return {
         "assistant": {
             "model": {
                 "provider": "openai",
                 "model"   : "gpt-4o",
-                "messages": [
+                "messages": [{"role": "system", "content": system_prompt}],
+                "temperature": 0.7,
+                "tools": [
                     {
-                        "role"   : "system",
-                        "content": system_prompt
+                        "type": "function",
+                        "function": {
+                            "name": "searchKnowledgeBase",
+                            "description": "Search for specific information in the company knowledge base (insurance plans, premiums, policy details).",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "query": {"type": "string", "description": "The search query based on customer question."},
+                                    "agency_id": {"type": "integer", "default": agency_id}
+                                },
+                                "required": ["query"]
+                            }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "bookAppointment",
+                            "description": "Book a meeting or appointment with an agent.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "customer_name": {"type": "string"},
+                                    "datetime": {"type": "string", "description": "ISO format date and time."},
+                                    "lead_id": {"type": "string", "default": "1"}
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "transferCall",
+                            "description": "Transfer the call to a human agent.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "agency_id": {"type": "integer", "default": agency_id}
+                                }
+                            }
+                        }
                     }
                 ]
             },
             "voice": {
                 "provider": "11labs",
-                "voiceId" : "charlie"
+                "voiceId" : "paul"
             },
             "transcriber": {
                 "provider": "deepgram",
-                "model"   : "nova-2",
+                "model" : "nova-2",
                 "language": "en"
             },
-            "firstMessage": agency.get(
-                "welcome_message",
-                f"Hello! I'm {agency_name} AI. How can I help you?"
-            )
+            "firstMessage": f"Hello! Welcome to {agency_name}. How can I help you today?"
         }
     }
 
@@ -170,13 +222,12 @@ async def handle_inbound_started(call: dict):
     """
     কাজ  : Inbound call শুরুর record তৈরি করে
     নেয়  : call object (Vapi থেকে)
-    দেয়  : success message
-    করে  : DB তে call record save করে
     """
+    if not call:
+        return {"status": "error", "message": "No call data"}
 
     call_id         = call.get("id")
     customer_number = call.get("customer", {}).get("number")
-    phone_number    = call.get("phoneNumber", {}).get("number")
     agency_id       = call.get("metadata", {}).get("agency_id", 1)
 
     print(f"📲 Inbound Started | Call: {call_id} | From: {customer_number}")
@@ -191,14 +242,7 @@ async def handle_inbound_started(call: dict):
         "customer_number": customer_number
     })
 
-    # GHL তে নতুন contact তৈরি করো
-    await ghl_service.create_contact(
-        name     = "Inbound Customer",
-        phone    = customer_number or "",
-        agency_id= agency_id
-    )
-
-    return {"status": "success", "type": "inbound_started"}
+    return {"status": "success"}
 
 
 # ============================================
@@ -210,22 +254,20 @@ async def handle_inbound_ended(message: dict):
     """
     কাজ  : Inbound call এর সব data save করে
     নেয়  : full message (transcript, duration সহ)
-    দেয়  : success message
-    করে  : DB update + GHL note add
     """
-
-    call      = message.get("call", {})
+    call      = message.get("call") or {} # call যদি None হয় তবে খালি dict নিবে
     call_id   = call.get("id")
-    agency_id = call.get("metadata", {}).get("agency_id", 1)
-    transcript= message.get("transcript", "")
-    duration  = message.get("durationSeconds", 0)
-    summary   = message.get("summary", "")
-
-    # Customer number নাও
-    customer_number = call.get("customer", {}).get("number", "")
-    ghl_contact_id  = call.get("metadata", {}).get("ghl_contact_id", "")
+    metadata  = call.get("metadata") or {}
+    agency_id = metadata.get("agency_id", 1)
+    
+    transcript = message.get("transcript", "")
+    duration   = message.get("durationSeconds", 0)
+    summary    = message.get("summary", "")
 
     print(f"📴 Inbound Ended | Call: {call_id} | Duration: {duration}s")
+
+    if not call_id:
+        return {"status": "error", "message": "No call ID"}
 
     # DB তে call update করো
     await db_service.update_call(call_id, {
@@ -235,16 +277,7 @@ async def handle_inbound_ended(message: dict):
         "call_type"       : "inbound"
     })
 
-    # GHL তে call note add করো
-    if ghl_contact_id:
-        await ghl_service.add_call_note(
-            ghl_contact_id  = ghl_contact_id,
-            call_summary    = summary or transcript[:500],
-            duration_seconds= duration,
-            intent          = "inbound_completed"
-        )
-
-    return {"status": "success", "type": "inbound_ended"}
+    return {"status": "success"}
 
 
 # ============================================

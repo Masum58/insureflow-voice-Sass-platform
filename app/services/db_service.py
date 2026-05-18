@@ -30,25 +30,10 @@ def get_db_headers():
 # AGENCY FUNCTIONS
 # ============================================
 
-async def get_agency(agency_id: int):
-    """
-    কাজ  : Agency র সব info DB থেকে আনে
-    নেয়  : agency_id
-    দেয়  : agency info (name, prompt, transfer_number, vapi_assistant_id)
-    কোথায় যায় : DB Partner → agencies table
-    """
-    # TODO: DB Partner ready হলে replace করবো
-    # async with httpx.AsyncClient() as client:
-    #     response = await client.get(
-    #         f"{config.DB_API_URL}/agencies/{agency_id}",
-    #         headers=get_db_headers()
-    #     )
-    #     return response.json()
-
-    # এখন Placeholder data
-    print(f"📦 DB: Getting agency | ID: {agency_id}")
-    return {
-        "id": agency_id,
+# Mock DB to store data in memory while testing
+MOCK_AGENCIES = {
+    102: {
+        "id": 102,
         "name": "ABC Insurance",
         "business_type": "health_insurance",
         "transfer_number": "+8801322158015",
@@ -58,49 +43,51 @@ async def get_agency(agency_id: int):
         "twilio_number": "+18447538461",
         "status": "active"
     }
+}
 
+async def get_agency(agency_id: int):
+    """
+    কাজ  : Agency র সব info DB থেকে আনে
+    """
+    print(f"DB: Getting agency | ID: {agency_id}")
+    
+    # Return from mock DB if exists, else return a default
+    if agency_id in MOCK_AGENCIES:
+        return MOCK_AGENCIES[agency_id]
+        
+    return {
+        "id": agency_id,
+        "name": "Default Agency",
+        "vapi_assistant_id": "placeholder_assistant_id",
+        "twilio_number": "+18447538461"
+    }
+
+async def get_agency_id_by_phone(phone_number: str) -> int:
+    """
+    কাজ  : Phone number দিয়ে agency ID বের করে
+    """
+    print(f"DB: Looking up agency by phone: {phone_number}")
+    if phone_number == "+18447538461":
+        return 102
+    return 1
 
 async def save_agency(agency_data: dict):
     """
     কাজ  : নতুন Agency DB তে save করে
-    নেয়  : agency_data (name, email, business_type etc)
-    দেয়  : saved agency (id সহ)
-    কোথায় যায় : DB Partner → agencies table
     """
-    # TODO: DB Partner ready হলে replace করবো
-    # async with httpx.AsyncClient() as client:
-    #     response = await client.post(
-    #         f"{config.DB_API_URL}/agencies",
-    #         json=agency_data,
-    #         headers=get_db_headers()
-    #     )
-    #     return response.json()
-
-    print(f"💾 DB: Saving agency | Name: {agency_data.get('name')}")
-    return {
-        "id": 1,
-        "name": agency_data.get("name"),
-        "status": "active"
-    }
-
+    print(f"DB: Saving agency | Name: {agency_data.get('name')}")
+    return {"id": 1, "name": agency_data.get("name"), "status": "active"}
 
 async def update_agency(agency_id: int, update_data: dict):
     """
     কাজ  : Agency র info update করে
-    নেয়  : agency_id, update_data (vapi_assistant_id, twilio_number etc)
-    দেয়  : updated agency
-    কোথায় যায় : DB Partner → agencies table
     """
-    # TODO: DB Partner ready হলে replace করবো
-    # async with httpx.AsyncClient() as client:
-    #     response = await client.put(
-    #         f"{config.DB_API_URL}/agencies/{agency_id}",
-    #         json=update_data,
-    #         headers=get_db_headers()
-    #     )
-    #     return response.json()
-
-    print(f"🔄 DB: Updating agency | ID: {agency_id} | Data: {update_data}")
+    print(f"DB: Updating agency | ID: {agency_id} | Data: {update_data}")
+    
+    # Update mock DB in memory
+    if agency_id in MOCK_AGENCIES:
+        MOCK_AGENCIES[agency_id].update(update_data)
+        
     return {"id": agency_id, "status": "updated"}
 
 
@@ -124,21 +111,14 @@ async def get_queued_leads(agency_id: int):
     #     )
     #     return response.json()
 
-    print(f"📋 DB: Getting queued leads | Agency: {agency_id}")
+    print(f"DB: Getting queued leads | Agency: {agency_id}")
     return [
         {
             "id": 1,
-            "phone": "+8801711111111",
-            "name": "Rahim Ahmed",
-            "email": "rahim@email.com",
+            "phone": "+8801335117990",  # Your actual phone number for testing
+            "name": "Test User",
+            "email": "test@email.com",
             "ghl_contact_id": "ghl_001"
-        },
-        {
-            "id": 2,
-            "phone": "+8801722222222",
-            "name": "Karim Mia",
-            "email": "karim@email.com",
-            "ghl_contact_id": "ghl_002"
         }
     ]
 
@@ -146,13 +126,8 @@ async def get_queued_leads(agency_id: int):
 async def get_lead(lead_id: int):
     """
     কাজ  : একটা lead এর info আনে
-    নেয়  : lead_id
-    দেয়  : lead info
-    কোথায় যায় : DB Partner → leads table
     """
-    # TODO: DB Partner ready হলে replace করবো
-
-    print(f"👤 DB: Getting lead | ID: {lead_id}")
+    print(f"DB: Getting lead | ID: {lead_id}")
     return {
         "id": lead_id,
         "phone": "+8801711111111",
@@ -205,7 +180,7 @@ async def save_call(call_data: dict):
     #     )
     #     return response.json()
 
-    print(f"💾 DB: Saving call | Call ID: {call_data.get('call_id')}")
+    print(f" DB: Saving call | Call ID: {call_data.get('call_id')}")
     return {"id": 1, "call_id": call_data.get("call_id"), "status": "saved"}
 
 
@@ -251,7 +226,7 @@ async def save_meeting(meeting_data: dict):
     #     )
     #     return response.json()
 
-    print(f"💾 DB: Saving meeting | Lead: {meeting_data.get('lead_id')}")
+    print(f" DB: Saving meeting | Lead: {meeting_data.get('lead_id')}")
     return {
         "id": 1,
         "lead_id": meeting_data.get("lead_id"),
