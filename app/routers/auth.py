@@ -43,6 +43,7 @@ async def test_db_service():
 
     # Agency test
     agency = await db_service.get_agency(1)
+    
 
     # Lead test
     leads = await db_service.get_queued_leads(1)

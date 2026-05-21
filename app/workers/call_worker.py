@@ -199,3 +199,16 @@ async def increment_called_count(redis, status_key: str):
         data = json.loads(existing)
         data["called"] = data.get("called", 0) + 1
         await redis.set(status_key, json.dumps(data))
+
+# ============================================
+# ফাইলটি সরাসরি রান করে টেস্ট করার জন্য
+# ============================================
+if __name__ == "__main__":
+    async def test_worker():
+        print("🚀 Starting Call Worker manually for Agency 102...")
+        
+        # আপনার টেস্ট এজেন্সির আইডি (যেমন 102) দিয়ে ওয়ার্কার চালু করুন
+        await run_campaign_worker(agency_id=102)
+
+    # স্ক্রিপ্টটি রান করার জন্য
+    asyncio.run(test_worker())

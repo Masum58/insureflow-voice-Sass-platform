@@ -3,7 +3,7 @@
 ফাইলের কাজ  : Agency র knowledge base manage করে
                
                1. File upload (PDF/CSV/XML/TXT)
-               2. Upload হলে → parse → ChromaDB save
+               2. Upload হলে → parse → ChromaDB or Pinecone save
                3. Files list দেখা
                4. File delete করা
                

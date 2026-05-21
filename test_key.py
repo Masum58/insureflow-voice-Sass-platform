@@ -2,17 +2,17 @@ import os
 from dotenv import load_dotenv
 import requests
 
-# .env ফাইল লোড করো
+# Load .env file
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
 
 if not api_key or api_key.strip() == "":
-    print("❌ Error: OPENAI_API_KEY is missing in your .env file!")
+    print("Error: OPENAI_API_KEY is missing in your .env file!")
     exit()
 
 print(f"Testing API Key: {api_key[:10]}...{api_key[-5:]}")
 
-# OpenAI API তে রিকোয়েস্ট পাঠিয়ে চেক করো
+# Send request to OpenAI API to check
 headers = {"Authorization": f"Bearer {api_key}"}
 response = requests.get("https://api.openai.com/v1/models", headers=headers)
 

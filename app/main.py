@@ -103,3 +103,11 @@ async def root():
         "status": "running",
         "message": "InsureFlow AI is live!"
     }
+
+
+# for health check
+@app.get("/health")
+def health_check():
+    return{
+        'status':'OK'
+    }
