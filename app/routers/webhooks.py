@@ -7,7 +7,8 @@
 """
 
 from fastapi import APIRouter, Request
-from app.services import db_service, ghl_service, rag_service
+#from app.services import db_service, ghl_service, rag_service
+from app.services import db_service, rag_service
 from app.workers import call_worker
 
 router = APIRouter()
@@ -309,11 +310,16 @@ async def handle_outbound_started(call: dict):
         "call_type"      : "outbound",
         "customer_number": customer_number
     })
-
+    """
     # Lead status → "called" update করো
     if lead_id:
         await db_service.update_lead(lead_id, {
             "status": "called"
+        })"""
+    
+    if lead_id:
+        await db_service.update_lead(lead_id,{
+            "status": "calling"
         })
 
     return {"status": "success", "type": "outbound_started"}
@@ -356,6 +362,7 @@ async def handle_outbound_ended(message: dict):
         "call_type"       : "outbound"
     })
 
+    """
     # Lead status update করো
     if lead_id:
         lead_status = intent_to_lead_status(intent)
@@ -376,7 +383,12 @@ async def handle_outbound_ended(message: dict):
             call_summary    = summary or transcript[:500],
             duration_seconds= duration,
             intent          = intent
-        )
+        )"""
+    if lead_id:
+        await db_service.update_lead(lead_id, {
+            "status": "done",
+            "intent": intent
+        })
 
     return {
         "status": "success",

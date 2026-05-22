@@ -41,6 +41,7 @@ MOCK_AGENCIES = {
         "custom_prompt": "You are an AI assistant for ABC Insurance.",
         "vapi_assistant_id": "placeholder_assistant_id",
         "twilio_number": "+18447538461",
+        "vapi_phone_number_id": "832b986f-a1c5-496e-a995-3b1fcca264b0",
         "status": "active"
     }
 }

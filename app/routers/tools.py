@@ -6,7 +6,8 @@
 """
 
 from fastapi import APIRouter, Request
-from app.services import db_service, ghl_service, calendly_service
+#from app.services import db_service, ghl_service, calendly_service
+from app.services import db_service, calendly_service
 
 router = APIRouter()
 
@@ -108,7 +109,7 @@ async def qualify_lead(request: Request):
         await db_service.update_lead(lead_id, {
             "status": intent
         })
-
+    """
     # GHL CRM update করো
     ghl_contact_id = data.get("ghl_contact_id", "")
     if ghl_contact_id:
@@ -116,7 +117,7 @@ async def qualify_lead(request: Request):
             ghl_contact_id=ghl_contact_id,
             intent=intent,
             agency_id=agency_id
-        )
+        )"""
 
     # Vapi এর জন্য সঠিক format
     return {

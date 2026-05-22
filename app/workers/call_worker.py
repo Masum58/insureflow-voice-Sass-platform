@@ -83,6 +83,7 @@ async def run_campaign_worker(agency_id: int):
         name         = lead_data.get("name")
         assistant_id = lead_data.get("assistant_id")
         twilio_number= lead_data.get("twilio_number")
+        vapi_phone_number_id= lead_data.get("vapi_phone_number_id")  # ← এটা add করো
 
         print(f"\n📞 Calling | Lead: {lead_id} | Name: {name} | Phone: {phone}")
 
@@ -107,7 +108,8 @@ async def run_campaign_worker(agency_id: int):
             lead_id      = lead_id,
             agency_id    = agency_id,
             assistant_id = assistant_id,
-            twilio_number= twilio_number
+            twilio_number= twilio_number,
+            vapi_phone_number_id = vapi_phone_number_id  # ← এটা add করো
         )
 
         if call_id:

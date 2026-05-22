@@ -205,7 +205,8 @@ async def start_campaign(request: CampaignStartRequest):
             "name"        : lead["name"],
             "agency_id"   : request.agency_id,
             "assistant_id": assistant_id,
-            "twilio_number": agency.get("twilio_number", config.TWILIO_PHONE_NUMBER)
+            "twilio_number": agency.get("twilio_number", config.TWILIO_PHONE_NUMBER),
+            "vapi_phone_number_id": agency.get("vapi_phone_number_id", config.VAPI_PHONE_NUMBER_ID)  # ← এটা add করো
         }
         redis_client.rpush(queue_key, json.dumps(lead_data))
 

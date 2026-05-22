@@ -285,7 +285,8 @@ async def start_outbound_call(
     lead_id: int,
     agency_id: int,
     assistant_id: str,
-    twilio_number: str
+    twilio_number: str,
+    vapi_phone_number_id : str = None  # ← নতুন parameter
 ):
     """
     কাজ  : Lead কে Vapi দিয়ে outbound call দেয়
@@ -293,10 +294,12 @@ async def start_outbound_call(
     দেয়  : call_id (Vapi থেকে)
     করে  : Vapi API তে POST request করে call শুরু করে
     """
+    # Agency র নিজের number, না থাকলে system default
+    phone_number_id = vapi_phone_number_id or config.VAPI_PHONE_NUMBER_ID
 
     call_config = {
         "assistantId": assistant_id,
-        "phoneNumberId": config.VAPI_PHONE_NUMBER_ID,
+        "phoneNumberId": phone_number_id,
         "customer": {
             "number": lead_phone
         },
