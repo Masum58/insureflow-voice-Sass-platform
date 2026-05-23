@@ -17,7 +17,7 @@ Connected with:
 """
 
 from fastapi import FastAPI
-from app.routers import webhooks, campaigns, tools, auth , knowledge_base
+from app.routers import webhooks, campaigns, tools, auth , knowledge_base,agencies
 from app import config
 
 
@@ -75,6 +75,12 @@ app.include_router(
     knowledge_base.router,
     prefix="/knowledge-base",
     tags=["📚 Knowledge Base"]
+)
+
+app.include_router(
+    agencies.router,
+    prefix="/agencies",
+    tags=["Agency Provision"]
 )
 
 

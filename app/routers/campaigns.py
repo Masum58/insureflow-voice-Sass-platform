@@ -11,7 +11,8 @@ Dependencies: vapi_service.py, db_service.py, call_worker.py
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from app.services import vapi_service, db_service
+from app.services import vapi_service, db_service,django_service
+from app.routers.agencies import AGENCY_STORE
 from app.workers import call_worker
 from app import config
 import redis
@@ -45,7 +46,7 @@ class CampaignStartRequest(BaseModel):
     """
     Description: Required data for starting a campaign
     """
-    agency_id   : int
+    business_id  : str   # ← UUID string (Django থেকে আসবে)
     campaign_name: str = "Default Campaign"
 
 
@@ -153,38 +154,39 @@ async def start_campaign(request: CampaignStartRequest):
     4. Automatically starts worker to initiate calls
     """
 
-    print(f"\n[Campaign Start] Agency: {request.agency_id} | Name: {request.campaign_name}")
+    print(f"\n[Campaign Start] Business: {request.business_id}")
 
     # ============================================
     # Step 1 - Fetch Agency Info
     # ============================================
-    agency = await db_service.get_agency(request.agency_id)
+    agency = AGENCY_STORE.get(request.business_id)
     
     
     if not agency:
         raise HTTPException(
             status_code=404,
-            detail=f"Agency {request.agency_id} not found"
+            detail=f"Business {request.business_id} not provisioned yet"
         )
 
     assistant_id = agency.get("vapi_assistant_id")
+    vapi_phone_number_id = agency.get("vapi_phone_number_id")
     if not assistant_id:
         raise HTTPException(
             status_code=400,
-            detail="Agency assistant not created yet. Run /campaigns/setup-agency first"
+            detail="Agency assistant not created yet. Run POST /agencies/ first"
         )
 
     print(f"[Agency found] Assistant: {assistant_id}")
 
     # ============================================
-    # Step 2 - Fetch Queued Leads
+    # Step 2 - Django থেকে Leads Fetch করো
     # ============================================
-    leads = await db_service.get_queued_leads(request.agency_id)
+    leads = await django_service.fetch_leads(request.business_id)
 
     if not leads:
         raise HTTPException(
             status_code=404,
-            detail="No queued leads found for this agency"
+            detail="No pending leads found"
         )
 
     print(f"[Leads found] Total: {len(leads)}")
@@ -192,7 +194,7 @@ async def start_campaign(request: CampaignStartRequest):
     # ============================================
     # Step 3 - Push Leads to Redis Queue
     # ============================================
-    queue_key = f"campaign:{request.agency_id}:queue"
+    queue_key = f"campaign:{request.business_id}:queue"
 
     # Clear previous queue
     redis_client.delete(queue_key)
@@ -200,25 +202,25 @@ async def start_campaign(request: CampaignStartRequest):
     # Push all leads
     for lead in leads:
         lead_data = {
-            "lead_id"     : lead["id"],
-            "phone"       : lead["phone"],
-            "name"        : lead["name"],
-            "agency_id"   : request.agency_id,
+            "lead_id"     : lead.get("id"),
+            "phone"       : lead.get("phone_number") or lead.get("phone"),
+            "name"        : lead.get("name", "Customer"),
+            "business_id" : request.business_id,
             "assistant_id": assistant_id,
-            "twilio_number": agency.get("twilio_number", config.TWILIO_PHONE_NUMBER),
-            "vapi_phone_number_id": agency.get("vapi_phone_number_id", config.VAPI_PHONE_NUMBER_ID)  # ← এটা add করো
+            "twilio_number": agency.get("twilio_number", ""),
+            "vapi_phone_number_id": vapi_phone_number_id
         }
         redis_client.rpush(queue_key, json.dumps(lead_data))
 
     total_queued = redis_client.llen(queue_key)
 
-    print(f"[Redis Queue] Key: {queue_key} | Total: {total_queued}")
+    print(f"[Redis Queue]  Total: {total_queued}")
 
     # ============================================
     # Step 4 - Save Campaign Status in Redis
     # ============================================
     campaign_status = {
-        "agency_id"    : request.agency_id,
+        "agency_id"    : request.business_id,
         "campaign_name": request.campaign_name,
         "status"       : "running",
         "total_leads"  : len(leads),
@@ -226,19 +228,19 @@ async def start_campaign(request: CampaignStartRequest):
         "called"       : 0
     }
     redis_client.set(
-        f"campaign:{request.agency_id}:status",
+        f"campaign:{request.business_id}:status",
         json.dumps(campaign_status)
     )
 
     # Step 5 - Run Worker in Background (before returning)
     asyncio.create_task(
-        call_worker.run_campaign_worker(request.agency_id)
+        call_worker.run_campaign_worker(request.business_id)
     )
 
     return {
         "status"        : "success",
         "campaign_name" : request.campaign_name,
-        "agency_id"     : request.agency_id,
+        "agency_id"     : request.business_id,
         "total_leads"   : len(leads),
         "queued_leads"  : total_queued,
         "message"       : f"Campaign started! {total_queued} leads queued for calling."
@@ -253,7 +255,7 @@ async def start_campaign(request: CampaignStartRequest):
 # Called By   : Frontend Dashboard
 # ============================================
 @router.post("/stop")
-async def stop_campaign(agency_id: int):
+async def stop_campaign(business_id: str):
     """
     Description: Stops the campaign
     Takes      : agency_id
@@ -261,26 +263,25 @@ async def stop_campaign(agency_id: int):
     Actions    : Clears the Redis Queue
     """
 
-    print(f"[Campaign Stop] Agency: {agency_id}")
+    print(f"[Campaign Stop] Agency: {business_id}")
 
     # Clear Redis Queue
-    queue_key = f"campaign:{agency_id}:queue"
+    queue_key = f"campaign:{business_id}:queue"
+    status_key = f"campaign:{business_id}:status"
+
+    
     redis_client.delete(queue_key)
-
-    # Update Status
-    status_key = f"campaign:{agency_id}:status"
     existing = redis_client.get(status_key)
-
     if existing:
         status_data = json.loads(existing)
         status_data["status"] = "stopped"
         redis_client.set(status_key, json.dumps(status_data))
 
-    print(f"[Campaign stopped] Agency: {agency_id}")
+    print(f"[Campaign stopped] Agency: {business_id}")
 
     return {
         "status"   : "success",
-        "agency_id": agency_id,
+        "agency_id": business_id,
         "message"  : "Campaign stopped successfully"
     }
 
@@ -291,16 +292,16 @@ async def stop_campaign(agency_id: int):
 # URL         : GET /campaigns/status/{agency_id}
 # Called By   : Frontend Dashboard
 # ============================================
-@router.get("/status/{agency_id}")
-async def get_campaign_status(agency_id: int):
+@router.get("/status/{business_id}")
+async def get_campaign_status(business_id: str):
     """
     Description: Shows the current status of the campaign
     Takes      : agency_id
     Returns    : campaign status + progress
     """
 
-    status_key = f"campaign:{agency_id}:status"
-    queue_key  = f"campaign:{agency_id}:queue"
+    status_key = f"campaign:{business_id}:status"
+    queue_key  = f"campaign:{business_id}:queue"
 
     # Get status from Redis
     status_data = redis_client.get(status_key)
@@ -308,9 +309,9 @@ async def get_campaign_status(agency_id: int):
 
     if not status_data:
         return {
-            "agency_id": agency_id,
+            "agency_id": business_id,
             "status"   : "no_campaign",
-            "message"  : "No campaign running for this agency"
+            "message"  : "No campaign running"
         }
 
     status = json.loads(status_data)
@@ -331,6 +332,6 @@ async def campaigns_test():
             "POST /campaigns/setup-agency",
             "POST /campaigns/start",
             "POST /campaigns/stop",
-            "GET  /campaigns/status/{agency_id}"
+            "GET  /campaigns/status/{business_id}"
         ]
     }

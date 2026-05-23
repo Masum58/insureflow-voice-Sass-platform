@@ -385,3 +385,54 @@ async def delete_assistant(assistant_id: str):
     else:
         print(f"❌ Failed to delete assistant | ID: {assistant_id}")
         return False
+    
+# ============================================
+# IMPORT TWILIO NUMBER TO VAPI
+# কাজ : Agency র Twilio number Vapi তে import করে
+# কে call করে : agencies.py (provision এ)
+# ============================================
+async def import_twilio_number(
+    twilio_sid   : str,
+    twilio_token : str,
+    twilio_number: str,
+    business_name: str
+) -> str:
+    """
+    কাজ  : Twilio number Vapi তে import করে
+    নেয়  : twilio_sid, twilio_token, twilio_number, business_name
+    দেয়  : vapi_phone_number_id
+    কখন : POST /agencies/ provision এ automatically call হয়
+
+    Flow:
+    Twilio credentials → Vapi API → vapi_phone_number_id পায়
+    """
+
+    import_config = {
+        "provider"          : "twilio",
+        "twilioAccountSid"  : twilio_sid,
+        "twilioAuthToken"   : twilio_token,
+        "number"            : twilio_number,
+        "name"              : f"{business_name}_number"
+    }
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{config.VAPI_BASE_URL}/phone-number",
+                json   = import_config,
+                headers= get_vapi_headers(),
+                timeout= 30
+            )
+
+        if response.status_code == 201:
+            data                 = response.json()
+            vapi_phone_number_id = data.get("id")
+            print(f"✅ Twilio imported to Vapi | Number: {twilio_number} | ID: {vapi_phone_number_id}")
+            return vapi_phone_number_id
+        else:
+            print(f"❌ Twilio import failed | Error: {response.text}")
+            return None
+
+    except Exception as e:
+        print(f"❌ Twilio import error | {str(e)}")
+        return None

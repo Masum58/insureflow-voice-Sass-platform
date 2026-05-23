@@ -8,8 +8,9 @@
 
 from fastapi import APIRouter, Request
 #from app.services import db_service, ghl_service, rag_service
-from app.services import db_service, rag_service
+from app.services import db_service, rag_service,django_service
 from app.workers import call_worker
+from app.routers.agencies import AGENCY_STORE
 
 router = APIRouter()
 
@@ -101,30 +102,31 @@ async def handle_assistant_request(message: dict):
     
     print(f"\n🔔 Assistant Request | Call: {call_id} | To: {called_number}")
 
-    # ১. ফোন নম্বর দিয়ে এজেন্সি আইডি বের করো
-    agency_id = None
-    if called_number:
-        try:
-            agency_id = await db_service.get_agency_id_by_phone(called_number)
-        except:
-            agency_id = None
+    # ১. AGENCY_STORE থেকে phone number দিয়ে business খোঁজো
+    business_id = None
+    agency      = {}
+    for bid, data in AGENCY_STORE.items():
+        if data.get("twilio_number") == called_number:
+            business_id = bid
+            agency      = data
+            break
     
     # ২. Fallback (যদি নম্বর না পাওয়া যায়)
-    if not agency_id:
+    if not business_id:
         metadata  = call.get("metadata") or {}
-        agency_id = metadata.get("agency_id", 1)
+        business_id = metadata.get("business_id", "default")
 
-    print(f"🏢 Identified Agency: {agency_id}")
+    agency_id   = business_id
+    print(f"🏢 Identified Agency: {business_id}")
 
     # ৩. এজেন্সি তথ্য এবং RAG কনটেক্সট নিয়ে আসো
     try:
-        agency = await db_service.get_agency(agency_id)
         rag_context = await rag_service.build_context(
-            agency_id = agency_id,
+            agency_id = business_id,
             query     = "insurance plans and policy coverage"
         )
     except:
-        agency = {"name": "Insurance Agency", "business_type": "Insurance"}
+        
         rag_context = ""
 
     # ৪. ডাইনামিক সিস্টেম প্রম্পট
@@ -310,13 +312,7 @@ async def handle_outbound_started(call: dict):
         "call_type"      : "outbound",
         "customer_number": customer_number
     })
-    """
-    # Lead status → "called" update করো
-    if lead_id:
-        await db_service.update_lead(lead_id, {
-            "status": "called"
-        })"""
-    
+   
     if lead_id:
         await db_service.update_lead(lead_id,{
             "status": "calling"
@@ -330,72 +326,57 @@ async def handle_outbound_started(call: dict):
 # কাজ : Outbound call শেষে সব data save করে
 # কখন: Call disconnect হলে
 # ============================================
+
 async def handle_outbound_ended(message: dict):
     """
-    কাজ  : Outbound call এর সব data save করে
-    নেয়  : full message (intent, transcript, duration সহ)
-    দেয়  : success message
-    করে  : DB update + Lead status update + GHL sync
+    কাজ  : Outbound call এর সব data Django তে পাঠায়
+    করে  : django_service.send_call_log() → Django handle করবে
     """
-
-    call       = message.get("call", {})
-    call_id    = call.get("id")
-    agency_id  = call.get("metadata", {}).get("agency_id", 1)
-    lead_id    = call.get("metadata", {}).get("lead_id")
-    transcript = message.get("transcript", "")
-    duration   = message.get("durationSeconds", 0)
-    summary    = message.get("summary", "")
+    call        = message.get("call", {})
+    call_id     = call.get("id")
+    metadata    = call.get("metadata", {})
+    business_id = metadata.get("business_id", "")
+    lead_id     = metadata.get("lead_id")
+    transcript  = message.get("transcript", "")
+    duration    = message.get("durationSeconds", 0)
+    summary     = message.get("summary", "")
+    recording   = message.get("recordingUrl", "")
 
     # Active call count কমাও
-    await call_worker.decrement_active_calls(agency_id)
+    await call_worker.decrement_active_calls(business_id)
+
     # Intent detect করো
     intent = detect_intent(message)
 
     print(f"📴 Outbound Ended | Call: {call_id} | Duration: {duration}s | Intent: {intent}")
 
-    # DB তে call update করো
-    await db_service.update_call(call_id, {
-        "status"          : "ended",
-        "intent"          : intent,
-        "transcript"      : transcript,
-        "duration_seconds": duration,
-        "call_type"       : "outbound"
-    })
+    # Duration format
+    minutes            = int(duration) // 60
+    seconds            = int(duration) % 60
+    duration_formatted = f"{minutes:02d}:{seconds:02d}"
 
-    """
-    # Lead status update করো
-    if lead_id:
-        lead_status = intent_to_lead_status(intent)
-        await db_service.update_lead(lead_id, {
-            "status": lead_status
-        })
-
-    # GHL CRM update করো
-    ghl_contact_id = call.get("metadata", {}).get("ghl_contact_id", "")
-    if ghl_contact_id:
-        await ghl_service.update_contact_status(
-            ghl_contact_id= ghl_contact_id,
-            intent        = intent,
-            agency_id     = agency_id
+    # ✅ Django তে call log পাঠাও
+    if business_id and lead_id:
+        await django_service.send_call_log(
+            business_id  = business_id,
+            call_log_data= {
+                "lead_id"     : lead_id,
+                "lead_status" : "done",
+                "name"        : metadata.get("lead_name", "Customer"),
+                "phone_number": call.get("customer", {}).get("number", ""),
+                "duration"    : duration_formatted,
+                "status"      : intent.capitalize(),
+                "summary"     : summary,
+                "transcript"  : transcript,
+                "audio_url"   : recording
+            }
         )
-        await ghl_service.add_call_note(
-            ghl_contact_id  = ghl_contact_id,
-            call_summary    = summary or transcript[:500],
-            duration_seconds= duration,
-            intent          = intent
-        )"""
-    if lead_id:
-        await db_service.update_lead(lead_id, {
-            "status": "done",
-            "intent": intent
-        })
 
     return {
         "status": "success",
         "type"  : "outbound_ended",
         "intent": intent
     }
-
 
 # ============================================
 # HELPER — INTENT DETECT

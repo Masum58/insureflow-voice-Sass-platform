@@ -13,7 +13,9 @@
 import json
 import asyncio
 import redis.asyncio as aioredis
-from app.services import vapi_service, db_service
+from app.services import vapi_service
+from app.services import django_service
+from app.routers.agencies import AGENCY_STORE
 from app import config
 
 
@@ -123,12 +125,9 @@ async def run_campaign_worker(agency_id: int):
 
         else:
             print(f"❌ Call failed | Lead: {lead_id} | {name}")
-
-            # Failed lead DB তে update করো
-            await db_service.update_lead(lead_id, {
-                "status": "call_failed"
-            })
-
+            # Django service দিয়ে log করবো
+            # business_id লাগবে তাই এখন শুধু log করি
+            print(f"⚠️ Lead {lead_id} call failed — will retry next campaign")
         # প্রতিটা call এর মধ্যে 2 second wait করো
         # Vapi rate limit avoid করতে
         await asyncio.sleep(2)

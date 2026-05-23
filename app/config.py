@@ -156,6 +156,10 @@ CALENDLY_EVENT_TYPE_URI = os.getenv("CALENDLY_EVENT_TYPE_URI")
 CALENDLY_BASE_URL = "https://api.calendly.com"
 
 
+# Django Backend
+DJANGO_BASE_URL = os.getenv("DJANGO_BASE_URL")
+
+
 if __name__ == "__main__":
     print("Config file run successfully!")
     print(f"App Name: {APP_NAME}")
